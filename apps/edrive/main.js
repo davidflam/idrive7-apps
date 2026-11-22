@@ -61,6 +61,7 @@ const { t: translate, plural } = require('./kit/i18n');
 const { RangeModel, curve } = require('./range');
 const startLive = require('./live');
 const startBattery12 = require('./battery12');
+const nettest = require('./nettest');
 const { linkQueue } = require('./linkqueue');
 const Car = require('./kit/car');
 
@@ -995,6 +996,8 @@ mgu.run({
         // where the kit runs the screen the values are read on their own (poll) and the resets are on the page
         ctx.hideButton('BTN_READ');
         const diagScroll = { y: 0, max: 0 };
+        // whether the internet (ABRP's telemetry API) can be reached from here: tested only while the Diagnostic page is up
+        const net = nettest.start(log, () => pages()[page] === 'diag', () => render());
         // the charge log: older charges a row at a time (logOff: rows scrolled back from the newest)
         const logView = { off: 0, max: 0, px: 0, sel: null };
         ctx.onScroll((dy) => {
@@ -1406,7 +1409,9 @@ mgu.run({
                 cv.text(r ? ago(Date.now() - r.t) : '-', cols[6], y, fsS, t.dim, { font: 'label' });
                 y += rowH;
             }));
-            cv.text('A value n/a or wrong? Adjust config.battery in apps/edrive/app.json and rebuild.', 48, 488, 20, t.dim);
+            // whether the internet can be reached from here (ABRP's telemetry API), in place of the hint on config.battery
+            const nr = net.last();
+            cv.text(nettest.text(nr), 48, 488, 20, !nr ? t.dim : nr.reachable ? GO : t.warn, { literal: true });
             if (d.demo) cv.text('Main page: demo data until the link answers', 1552, 488, 20, t.warn, { align: 'right' });
         }
 
