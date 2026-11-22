@@ -611,6 +611,18 @@ const checks = [
         assert.strictEqual(big && big.str, String(Math.round(74.21 / 0.195 * 0.8686)), 'range ' + (big && big.str));
         replies = {};
     }],
+    ['B15. an iX3\'s 12 V from its battery unit (E5B6, 0.01 V): F442 refused there and by the body module, no engine unit asked', async () => {
+        const dir = tmp('ix3-12v');
+        // 05 BB = 14.67 V, as read on an iX3 G08 in READY
+        replies = Object.assign(IX3(0, 0, 0), { '7:E5CE': '1C 9C 1C 7B 1C B5', '7:E5C7': '27 5C 2F C2', '7:F442': 'NRC 31', '64:F442': 'NRC 31', '7:E5B6': '05 BB' });
+        asked = [];
+        const b = await boot(dir, {}, { demo: 'off', hybrid: 'bev' });
+        for (let i = 0; i < 3; i++) { now += 20000; await b.read(); }
+        const t = await b.draw();
+        assert(t.some((x) => x.includes('14.67')), 'the 12 V: ' + t.join(' | '));
+        assert(!asked.some((q) => [0x12, 0x13, 0x18].indexOf(q.ecu) >= 0), 'no engine or gearbox unit asked');
+        replies = {};
+    }],
     ['B2. DDBC\'s zeros are never an empty battery, also when E5CE misses a reading', async () => {
         const dir = tmp('zeros');
         replies = IX3(55, 40.7, 73.5);

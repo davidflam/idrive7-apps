@@ -56,6 +56,8 @@ const V12 = [
     Object.assign({ ecu: 0x12, did: '5853' }, VOLT),
     Object.assign({ ecu: 0x40, did: 'F442' }, VOLT),
     Object.assign({ ecu: 0x1A, did: 'F442' }, VOLT),
+    // an iX3 G08's battery unit: the 12 V it measures, 0.01 V (it refuses F442, and has no engine unit)
+    { ecu: 0x07, did: 'E5B6', bytes: 2, at: 0, factor: 0.01, offset: 0, min: 5, max: 18 },
 ];
 const SME = 0x07;
 const V12_ECUS = V12.map((c) => c.ecu).filter((e, i, a) => a.indexOf(e) === i);
