@@ -939,6 +939,28 @@ const checks = [
             [SH, WA].forEach((f, i) => { try { if (keep[i]) fs.writeFileSync(f, keep[i]); else fs.unlinkSync(f); } catch (e) { /* none */ } });
         }
     }],
+    ['started with the car, not opened: Cluster Info\'s panel answered (charge, battery temperature, range, energy)', async () => {
+        [MAIN, LIVE].forEach((f) => { delete require.cache[f]; });
+        require(MAIN);
+        values = { soc: 64.2 }; timers = [];
+        const dir = tmp('bg-ci'), ci = tmp('bg-ci-folder'), ctx = context(dir, { hybrid: 'bev' });
+        process.env.CLUSTER_INFO_DIR = ci;
+        try {
+            // what the screens kept at the last start: 4.4 km per %, down to 0 %, 0.74 kWh per %
+            fs.writeFileSync(path.join(dir, 'battery.json'), JSON.stringify({ rangeKpp: 4.4, rangeRes: 0, kwhPerPct: 0.74 }));
+            const bg = app.background({ settings: ctx.settings, log: quiet, spec: SPEC, dataDir: dir, signals: ctx.signals });
+            ctx.watchers.statusBatteryTemperature({ actualValueTemperatureHighVoltageStorage: 75, actualValueTemperatureHighVoltageStorageMinimum: 74 });
+            diag.available = true; diag.emit('available', true); await flush();
+            assert(!fs.existsSync(path.join(ci, 'edrive.json')), 'no panel asks: nothing written');
+            // Cluster Info's panel up, asking for the range, the battery and the charge (not the power)
+            fs.writeFileSync(path.join(ci, 'wanted.json'), JSON.stringify({ t: now, power: false, values: ['range', 'battery', 'soc'] }));
+            diag.emit('available', true); await flush();
+            const f = JSON.parse(fs.readFileSync(path.join(ci, 'edrive.json'), 'utf8'));
+            assert.deepStrictEqual(f.values, { soc: { pct: 64.2 }, battery: { c: 25 }, erange: { km: 282 }, energy: { kwh: 47.5 } }, JSON.stringify(f));
+            assert.strictEqual(f.vehicle, 'bev');
+            bg.stop();
+        } finally { delete process.env.CLUSTER_INFO_DIR; }
+    }],
 ];
 
 (async () => {

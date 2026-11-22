@@ -157,6 +157,13 @@ class Demo {
  * no power or range (those come with the screens). A car known to have no high-voltage battery (battery.json
  * noHybrid, setting "Drive system" not set to one) reads nothing. Opened, start() takes its link over and stops this. */
 const SHARED = '/tmp/mgu-edrive.json', WANTED = '/tmp/mgu-edrive-wanted.json', BG_READ_MS = 10000, BG_WANTED_MS = 5000;
+/* Cluster Info and its family (eroobeeroo/idrive7-cluster-info) ask in their folder (wanted*.json { t, power, values })
+ * and read ours there (edrive.json), which they count as gone 3 s after it was written: in the background it is
+ * written every BG_CI_MS with the last charge read, the battery's temperature (its car signal), the range from the
+ * km per % the screens last worked out (battery.json rangeKpp, rangeRes) and the energy in it. No power (that
+ * needs the screens' fast reads). */
+const BG_CI_MS = 1000, CI_FRESH_MS = 5000;
+const ciDir = () => process.env.CLUSTER_INFO_DIR || '/dev/shm/cluster-info';
 function background(bg) {
     const { settings, log } = bg;
     const cfg = Object.assign({ ecu: 7, soc: [] }, (bg.spec.config && bg.spec.config.battery) || {});
@@ -176,22 +183,67 @@ function background(bg) {
     const wanted = () => {
         try { const w = JSON.parse(fs.readFileSync(WANTED, 'utf8')); return Date.now() - w.t < BG_WANTED_MS && !!(w.soc || w.power); } catch (e) { return false; }
     };
+    /** What Cluster Info asks for now: its values ('soc', 'range', ...), [] while nothing asks (no panel up). */
+    const ciWanted = () => {
+        let out = [];
+        try {
+            fs.readdirSync(ciDir()).filter((n) => /^wanted(-[\w.-]+)?\.json$/.test(n)).forEach((n) => {
+                try {
+                    const w = JSON.parse(fs.readFileSync(path.join(ciDir(), n), 'utf8'));
+                    if (w && Date.now() - w.t < CI_FRESH_MS && (w.power || (Array.isArray(w.values) && w.values.length))) out = out.concat(w.values || [], w.power ? ['power'] : []);
+                } catch (e) { /* half written */ }
+            });
+        } catch (e) { /* no such folder: no Cluster Info */ }
+        return out;
+    };
+    // the battery's temperature as the car sends it (the screens' signal and scaling)
+    let batt = null, socNow = null, socT = 0;
+    const S = (bg.spec.config && bg.spec.config.scaling) || {}, bs = S.batteryTemp || { factor: 1, offset: -50, invalid: 255 };
+    Promise.resolve(bg.signals.watch('de.bmw.infotainment.drivingexcitement.Efficiencytainment2', '1', {
+        statusBatteryTemperature: (v) => {
+            // (the field however the struct arrives: at the top, or wrapped, as the screens' entries() finds it)
+            const find = (o, k, depth) => (!o || typeof o !== 'object' || depth > 3 ? undefined : k in o ? o[k]
+                : Object.keys(o).map((x) => find(o[x], k, depth + 1)).find((x) => x !== undefined));
+            const raw = find(v, 'actualValueTemperatureHighVoltageStorage', 0);
+            const c = typeof raw === 'number' && raw !== bs.invalid ? raw * bs.factor + (bs.offset || 0) : null;
+            batt = c !== null && c > -30 && c < 70 ? c : null;
+        },
+    }, log)).catch(() => { /* no temperature then */ });
+    function writeCi() {
+        const asked = ciWanted();
+        if (stopped || left || !asked.length || !G.isNum(socNow) || Date.now() - socT > 60000) return;
+        const bev = hy === 'bev' || (hy === 'auto' && st.bev === true);
+        const ci = { v: 1, t: Date.now(), app: 'eDrive', values: { soc: { pct: socNow } } };
+        if (bev) ci.vehicle = 'bev';
+        if (G.isNum(batt)) ci.values.battery = { c: batt };
+        if ((settings.get('clusterRange') || asked.indexOf('range') >= 0) && G.isNum(st.rangeKpp)) {
+            ci.values.erange = { km: Math.round(Math.max(0, socNow - (G.isNum(st.rangeRes) ? st.rangeRes : 0)) * st.rangeKpp) };
+        }
+        if (G.isNum(st.kwhPerPct)) ci.values.energy = { kwh: +(st.kwhPerPct * socNow).toFixed(1) };
+        try {
+            const f = path.join(ciDir(), 'edrive.json');
+            fs.writeFileSync(f + '.tmp', JSON.stringify(ci), { mode: 0o644 });
+            fs.renameSync(f + '.tmp', f);
+        } catch (e) { /* the folder not there yet: the next write */ }
+    }
     async function read() {
-        if (stopped || busy || left || !diag.available || !wanted()) return;
+        if (stopped || busy || left || !diag.available || !(wanted() || ciWanted().length)) return;
         busy = true;
         try {
             const soc = await reader.value('soc', cfg.soc);
             if (stopped || !G.isNum(soc)) return;
             if (!said) { log.info('background: the charge for other apps (' + G.fmt(soc, 1) + ' %)'); said = true; }
+            socNow = soc; socT = Date.now();
+            writeCi();
             const out = { t: Date.now(), kw: null, soc, rangeKm: null, kwRead: null, fast: false, limitOut: null, limitIn: null };
             fs.writeFileSync(SHARED + '.tmp', JSON.stringify(out), { mode: 0o644 });
             fs.chmodSync(SHARED + '.tmp', 0o644);
             fs.renameSync(SHARED + '.tmp', SHARED);
         } catch (e) { log.warn('background: ' + (e && e.message || e)); } finally { busy = false; }
     }
-    const timer = setInterval(read, BG_READ_MS);
+    const timer = setInterval(read, BG_READ_MS), ciTimer = setInterval(writeCi, BG_CI_MS);
     diag.on('available', (a) => { if (a) read(); });
-    return { diag, stop() { stopped = true; clearInterval(timer); } };
+    return { diag, stop() { stopped = true; clearInterval(timer); clearInterval(ciTimer); } };
 }
 
 mgu.run({
@@ -946,6 +998,9 @@ mgu.run({
                 const p = lv.powerNow({});
                 const e = G.isNum(d.soc) && !d.stale ? estimate(d.soc, d.ambient, d.climate, d.pace, comfortKw(d)) : null;
                 const ps = lv.powerShare();
+                // kept for the background mode, before the screens are opened at the next start (battery.json, saved
+                // with the next charge reading): the km per % now, the charge it counts down to, the kWh in 1 %
+                if (e && G.isNum(e.kpp)) { st.rangeKpp = +e.kpp.toFixed(3); st.rangeRes = e.res; st.kwhPerPct = +kwhPerPct().toFixed(4); }
                 const out = { t: Date.now(), kw: p && G.isNum(p.kw) ? +p.kw.toFixed(1) : null, soc: G.isNum(d.soc) && !d.stale ? d.soc : null,
                     rangeKm: e && G.isNum(e.mid) ? Math.round(e.mid) : null,
                     kwRead: G.isNum(ps.kwRead) ? +ps.kwRead.toFixed(1) : null, fast: ps.fast,
