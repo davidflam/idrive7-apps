@@ -492,6 +492,41 @@ const checks = [
         const t = b.texts.map((x) => x.str);
         assert(t.some((x) => x.includes('R$ 11,00')) && !t.some((x) => x.includes('€')), t.join(' | '));
     }],
+    ['19. the charge log: a row tapped and Delete pressed twice removes that charge; older ones reached by scrolling', async () => {
+        const dir = tmp('delete'), day = 86400000, t0 = Date.now() - 20 * day;
+        // 12 charges a day apart, 1 kWh each, the newest last
+        const log = Array.from({ length: 12 }, (_, i) => ({ from: 20, to: 40, fromT: t0 + i * day - 3600000, toT: t0 + i * day, kwh: 1 + i }));
+        fs.writeFileSync(path.join(dir, 'battery.json'), JSON.stringify({ log, lastCharge: log[11] }));
+        const b = await boot(dir, {}, { hybrid: 'bev', demo: 'off' });
+        const ctx = b.ctx, canvas = ctx.canvas;
+        let cv = null;
+        ctx.canvas = (w, h) => { cv = Object.assign(canvas(w, h), { own: true }); return cv; };
+        for (let i = 0; i < 3; i++) await b.page();
+        const tap = async (key) => { await b.draw(); const tg = cv.targets.filter((x) => x.key === key).pop(); assert(tg, key + ' drawn: ' + cv.targets.map((x) => x.key).join(' ')); await tg.run(); await flush(); };
+        let t = await b.draw();
+        assert(t.includes('12.0 kWh') && !t.includes('1.0 kWh'), 'the newest 8 shown: ' + t.join(' | '));
+        // the newest row (12 kWh) selected, Delete: asks first, then removes it; the Last charge is the one before
+        await tap('logrow0');
+        await tap('logdel');
+        assert.strictEqual(state(dir).log.length, 12, 'one press only arms it');
+        await tap('logdel');
+        let s = state(dir);
+        assert(s.log.length === 11 && !s.log.some((c) => c.kwh === 12) && s.lastCharge.kwh === 11, 'deleted, the last charge the one before: ' + JSON.stringify(s.lastCharge));
+        t = await b.draw();
+        assert(!t.includes('12.0 kWh') && t.includes('11.0 kWh'), 'gone from the list: ' + t.join(' | '));
+        // scrolled to the oldest: 1.0 kWh shown, and deleted the same way
+        assert(ctx.scroll(43 * 10), 'scrolled');
+        t = await b.draw();
+        assert(t.includes('1.0 kWh'), 'the oldest reached by scrolling: ' + t.join(' | '));
+        const row = cv.targets.filter((x) => /^logrow/.test(x.key)).pop().key;
+        await tap(row); await tap('logdel'); await tap('logdel');
+        s = state(dir);
+        assert(s.log.length === 10 && !s.log.some((c) => c.kwh === 1), 'the oldest deleted: ' + s.log.map((c) => c.kwh).join(','));
+        // Cancel drops the selection; no Delete without one
+        await tap('logrow0'); await tap('logsel0');
+        await b.draw();
+        assert(!cv.targets.some((x) => x.key === 'logdel'), 'no Delete without a selection');
+    }],
     ['16. Diagnostic: the scan\'s bytes in hex over pages, and the signals whole (wrapped), reached by scrolling', async () => {
         const dir = tmp('dump');
         // a finished scan: a long reply (100 bytes: 3 lines of 40), short ones sharing a line

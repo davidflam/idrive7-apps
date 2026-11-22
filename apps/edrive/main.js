@@ -995,7 +995,18 @@ mgu.run({
         // where the kit runs the screen the values are read on their own (poll) and the resets are on the page
         ctx.hideButton('BTN_READ');
         const diagScroll = { y: 0, max: 0 };
+        // the charge log: older charges a row at a time (logOff: rows scrolled back from the newest)
+        const logView = { off: 0, max: 0, px: 0, sel: null };
         ctx.onScroll((dy) => {
+            if (pages()[page] === 'log') {
+                logView.px += dy;
+                const rows = Math.trunc(logView.px / 43);
+                if (!rows) return true;
+                logView.px -= rows * 43;
+                const off = G.clamp(logView.off + rows, 0, logView.max), moved = off !== logView.off;
+                logView.off = off;
+                return moved;
+            }
             if (pages()[page] !== 'diag') return false;
             const y = G.clamp(diagScroll.y + dy, 0, diagScroll.max), moved = y !== diagScroll.y;
             diagScroll.y = y;
@@ -1279,6 +1290,17 @@ mgu.run({
             return c[1] ? c[0] + (settings.get('currency') === 'brl' ? n.replace('.', ',') : n) : n + c[0];
         };
 
+        /** Removes the charge that ended at toT from the log (the totals and the chart follow); the Last charge panel
+         *  then shows the one before it. */
+        function deleteCharge(toT) {
+            const before = (st.log || []).length;
+            st.log = (st.log || []).filter((c) => c.toT !== toT);
+            if (st.log.length === before) return;
+            if (st.lastCharge && st.lastCharge.toT === toT) st.lastCharge = st.log.length ? st.log[st.log.length - 1] : null;
+            logView.sel = null;
+            log.info('charge of ' + new Date(toT).toISOString() + ' deleted from the log');
+            save();
+        }
         function renderLog(cv, t, d) {
             const all = d.demo ? demo.log() : (st.log || []);
             const kwhOf = (c) => (G.isNum(c.kwh) ? c.kwh : 0);
@@ -1296,9 +1318,24 @@ mgu.run({
                 cv.text('Every charge of ' + cfg.chargeMinPct + ' % or more shows up here,', 544, 330 + ny, 26, t.dim, { align: 'center' });
                 cv.text('also overnight charges.', 544, 366 + ny, 26, t.dim, { align: 'center' });
             }
-            all.slice(-nRows).reverse().forEach((c, i) => {
+            // older charges by scrolling (a finger or the controller); a tap on a row selects it, Delete (twice) removes it
+            logView.max = Math.max(0, all.length - nRows);
+            logView.off = G.clamp(logView.off, 0, logView.max);
+            if (logView.max) cv.scroll = true;
+            const shown = all.slice(Math.max(0, all.length - nRows - logView.off), all.length - logView.off).reverse();
+            if (logView.sel !== null && !all.some((c) => c.toT === logView.sel)) logView.sel = null;
+            if (logView.off) cv.text('older: ' + (all.length - logView.off - shown.length) + '   newer: ' + logView.off, 1040, 80, 18, t.dim, { align: 'right' });
+            else if (logView.max) cv.text('scroll for older charges', 1040, 80, 18, t.dim, { align: 'right' });
+            if (logView.sel !== null && !d.demo) {
+                G.button(cv, t, 1040 - 150 - 330, 56, 150, 40, 'Delete', () => { deleteCharge(logView.sel); return render(); }, { key: 'logdel', confirm: true, color: t.crit });
+                G.button(cv, t, 1040 - 150 - 330 - 12 - 120, 56, 120, 40, 'Cancel', () => { logView.sel = null; return render(); }, { key: 'logsel0' });
+            }
+            shown.forEach((c, i) => {
                 const y = Math.round(174 + i * rowP);
-                if (i % 2 === 0) cv.roundRect(40, y - 28, 1008, 38, 8, withAlpha(t.track, 0.55));
+                const sel = logView.sel === c.toT;
+                if (sel) cv.roundRect(40, y - 28, 1008, 38, 8, withAlpha(t.crit || '#ff3b30', 0.35));
+                else if (i % 2 === 0) cv.roundRect(40, y - 28, 1008, 38, 8, withAlpha(t.track, 0.55));
+                if (!d.demo) cv.target(40, y - 28, 1008, 38, () => { logView.sel = sel ? null : c.toT; return render(); }, 'logrow' + i);
                 const add = c.to - c.from;
                 cv.text(dateOf(c.toT), cols[0], y, 24, t.text, { font: 'label' });
                 cv.text('+' + add.toFixed(0) + ' %', cols[1], y, 26, GO, { font: 'bold' });
