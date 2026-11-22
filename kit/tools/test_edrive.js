@@ -623,6 +623,29 @@ const checks = [
         assert(!asked.some((q) => [0x12, 0x13, 0x18].indexOf(q.ecu) >= 0), 'no engine or gearbox unit asked');
         replies = {};
     }],
+    ['B16. a charge\'s duration: watched awake as it was, partly asleep as the most it took (<); in the log and the Last charge panel', async () => {
+        const dir = tmp('duration');
+        // awake: 40 -> 60 % over 50 min at the charger, then driving off
+        let b = await boot(dir, { soc: 40, soh: 100 }, { demo: 'off', hybrid: 'bev' });
+        now += 20000; await b.read();
+        for (let i = 1; i <= 10; i++) { now += 5 * 60000; values.soc = 40 + 2 * i; await b.read(); }
+        b.drive(30); now += 20000; await b.read();
+        let c = state(dir).lastCharge;
+        assert(c && Math.round(c.durMs / 60000) === 50 && c.slept === false, 'awake, 50 min: ' + JSON.stringify(c));
+        // asleep: off at 58 %, on again 9 h 40 min later at 90 %
+        b.drive(0); now += 20000; values.soc = 58; await b.read(); b.exit();
+        now += (9 * 60 + 40) * 60000;
+        b = await boot(dir, { soc: 90, soh: 100 }, { demo: 'off', hybrid: 'bev' });
+        await b.read();
+        let t = await b.draw();
+        assert(t.some((x) => /< 9 h 40 min/.test(x)), 'the open charge in the Last charge panel: ' + t.filter((x) => /%/.test(x)).join(' | '));
+        b.drive(30); now += 20000; await b.read();
+        c = state(dir).lastCharge;
+        assert(c && c.slept === true && Math.round(c.durMs / 60000) === 9 * 60 + 40, 'asleep: the most it took: ' + JSON.stringify(c));
+        for (let i = 0; i < 3; i++) await b.page();
+        t = await b.draw();
+        assert(t.includes('DURATION') && t.includes('< 9 h 40 min') && t.includes('50 min'), 'the log: ' + t.join(' | '));
+    }],
     ['B2. DDBC\'s zeros are never an empty battery, also when E5CE misses a reading', async () => {
         const dir = tmp('zeros');
         replies = IX3(55, 40.7, 73.5);

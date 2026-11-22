@@ -142,7 +142,7 @@ class Demo {
             for (let i = 0; i < 16; i++) {
                 t += (0.8 + ((i * 37) % 10) / 10) * 86400000;
                 const from = 12 + (i * 23) % 40, to = Math.min(100, from + 35 + (i * 17) % 50);
-                this._log.push({ from, to, fromT: t - 4 * 3600000, toT: t });
+                this._log.push({ from, to, fromT: t - 4 * 3600000, toT: t, durMs: (1 + (i * 13) % 7) * 1800000, slept: i % 3 === 0 });
             }
         }
         // the energy as the battery's size now (the drive system can change)
@@ -549,7 +549,10 @@ mgu.run({
             const s = st.session;
             st.session = null;
             if (s && s.to - s.from >= cfg.chargeMinPct) {
-                st.lastCharge = { from: s.from, to: s.to, fromT: s.fromT, toT: s.toT, kwh: chargeKwh(s.from, s.to) };
+                // (how long it took: from the level before it to the last level read; slept: the car was off for part of
+                // it, so that is the most it took - plugged in later or done earlier is not seen)
+                st.lastCharge = { from: s.from, to: s.to, fromT: s.fromT, toT: s.toT, kwh: chargeKwh(s.from, s.to),
+                    durMs: G.isNum(s.fromT) && G.isNum(s.toT) ? Math.max(0, s.toT - s.fromT) : null, slept: !!s.slept };
                 st.log = (st.log || []).concat([st.lastCharge]).slice(-LOG_MAX);
                 log.info('charge ' + s.from.toFixed(1) + ' -> ' + s.to.toFixed(1) + ' %');
             }
@@ -585,6 +588,7 @@ mgu.run({
                     // session stays open until the car drives off: one charge from the first level to the last
                     if (!st.session) st.session = { from: prev, fromT: st.lastSocT };
                     st.session.to = soc; st.session.toT = now;
+                    if (now - (st.lastSocT || now) > ASLEEP_MS) st.session.slept = true;     // (off for part of it)
                     if (moving) closeSession();
                 } else if (soc > prev + 0.3 && !moving) {
                     if (!st.session) st.session = { from: prev, fromT: st.lastSocT || now };
@@ -592,6 +596,7 @@ mgu.run({
                 } else if (!moving && st.session && soc > st.session.to) {
                     // a charge going on in small steps (less than 0.3 % per reading)
                     st.session.to = soc; st.session.toT = now;
+                    if (now - (st.lastSocT || now) > ASLEEP_MS) st.session.slept = true;
                 } else if (!moving && !st.session && !engineRunning && live.rest && soc > live.rest.soc + REST_RISE) {
                     // charging awake, too slowly for 0.3 % per reading (AC, or a 50 kW charger on a big battery):
                     // the charge rose this much since the lowest reading standing
@@ -1152,7 +1157,8 @@ mgu.run({
                 const ly = 489 + lc, fw = cv.text(String(Math.round(c.from)), 792, ly, 24, t.dim), ax = 792 + fw + 9, ay = ly - 8;
                 cv.line(ax, ay, ax + 18, ay, 2, t.dim);
                 cv.polyline([[ax + 12, ay - 5], [ax + 18, ay], [ax + 12, ay + 5]], 2, t.dim);
-                cv.text(Math.round(c.to) + ' %  ·  ' + (c.open ? 'now' : ago(Date.now() - c.toT)), ax + 27, ly, 24, t.dim);
+                const dur = durText(c.open ? { durMs: c.toT - c.fromT, slept: c.slept } : c);
+                cv.text(Math.round(c.to) + ' %  ·  ' + (c.open ? 'now' : ago(Date.now() - c.toT)) + (dur ? '  ·  ' + dur : ''), ax + 27, ly, 24, t.dim);
             } else {
                 cv.text('none yet', 792, 446 + lc, 28, t.dim);
             }
@@ -1257,6 +1263,13 @@ mgu.run({
         const pad = (n) => (n < 10 ? '0' : '') + n;
         const dateOf = (ms) => { const x = new Date(ms); return pad(x.getDate()) + '.' + pad(x.getMonth() + 1) + '  ' + pad(x.getHours()) + ':' + pad(x.getMinutes()); };
         const price = () => settings.get('price') || 0;
+        /** A charge's duration: '1 h 25 min', '42 min'; '< 9 h 40 min' when the car was off for part of it (the most it
+         * took; the fonts have no ≤); '' for a charge logged before durations were (no durMs). */
+        const durText = (c) => {
+            if (!c || !G.isNum(c.durMs) || c.durMs <= 0) return '';
+            const m = Math.max(1, Math.round(c.durMs / 60000)), h = Math.floor(m / 60);
+            return (c.slept ? '< ' : '') + (h ? h + ' h ' + (m % 60 ? m % 60 + ' min' : '') : m + ' min').trim();
+        };
         // the cost in the currency set: € after the number, R$ / $ / £ before it (R$ with a decimal comma, as in Brazil)
         const CUR = { eur: [' €', false], brl: ['R$ ', true], usd: ['$', true], gbp: ['£', true] };
         const money = (kwh) => {
@@ -1273,8 +1286,8 @@ mgu.run({
             const ex = G.panel(cv, t, 24, 44, 1040, 468, 'Charges' + (all.length ? '  (' + all.length + ')' : '')).h - 468;
             // room below the page: another row where a whole one fits, the rest spread over the rows
             const nRows = 8 + Math.floor(ex / 43), rowP = 43 + (ex - (nRows - 8) * 43) / nRows;
-            const cols = [48, 230, 380, 590, 760, 920];
-            ['DATE', 'ADDED', 'FROM - TO', 'ENERGY', 'RANGE', price() > 0 ? 'COST' : ''].forEach((h, i) => cv.text(h, cols[i], 121, 22, t.dim, { font: 'bold', spacing: 1 }));
+            const cols = [48, 196, 312, 466, 650, 800, 920];
+            ['DATE', 'ADDED', 'FROM - TO', 'DURATION', 'ENERGY', 'RANGE', price() > 0 ? 'COST' : ''].forEach((h, i) => cv.text(h, cols[i], 121, 22, t.dim, { font: 'bold', spacing: 1 }));
             cv.fillRect(48, 133, 992, 1, t.panelEdge);
             if (!all.length) {
                 const ny = Math.round(ex / 2);
@@ -1289,10 +1302,11 @@ mgu.run({
                 cv.text(dateOf(c.toT), cols[0], y, 24, t.text, { font: 'label' });
                 cv.text('+' + add.toFixed(0) + ' %', cols[1], y, 26, GO, { font: 'bold' });
                 cv.text(Math.round(c.from) + ' - ' + Math.round(c.to) + ' %', cols[2], y, 24, t.dim, { font: 'label' });
-                cv.text(G.isNum(c.kwh) ? c.kwh.toFixed(1) + ' kWh' : '-', cols[3], y, 24, t.text, { font: 'label' });
-                cv.text('+' + Math.round(D(kmOf(add))) + ' ' + dU(), cols[4], y, 24, t.text, { font: 'label' });
+                cv.text(durText(c) || '-', cols[3], y, 24, c.slept ? t.dim : t.text, { font: 'label' });
+                cv.text(G.isNum(c.kwh) ? c.kwh.toFixed(1) + ' kWh' : '-', cols[4], y, 24, t.text, { font: 'label' });
+                cv.text('+' + Math.round(D(kmOf(add))) + ' ' + dU(), cols[5], y, 24, t.text, { font: 'label' });
                 const m = money(c.kwh);
-                if (m) cv.text(m, cols[5], y, 24, t.text, { font: 'label' });
+                if (m) cv.text(m, cols[6], y, 24, t.text, { font: 'label' });
             });
 
             // ---- totals + 14-day chart
