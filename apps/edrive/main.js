@@ -961,8 +961,9 @@ mgu.run({
                     if (G.isNum(out.kw)) ci.power = { kw: out.kw, outMax: out.limitOut || (isBev() && gk) || 100, inMax: out.limitIn || (isBev() && gk * 0.5) || 60, old: false };
                     if (G.isNum(out.soc)) ci.values.soc = { pct: out.soc };
                     if (isBev()) ci.vehicle = 'bev';        // (the cluster apps' Vehicle: Auto finds an electric car by this)
-                    // Settings > Range on the cluster / HUD: Cluster Info shows a shared electric range instead of the car's own
-                    if (settings.get('clusterRange') && G.isNum(out.rangeKm)) ci.values.erange = { km: out.rangeKm };
+                    // the range: for Cluster Layouts with Settings > Range on the cluster / HUD (instead of the car's own),
+                    // and whenever Cluster Info's panel shows it (its Range item asks for 'range')
+                    if ((settings.get('clusterRange') || lv.clusterInfoValues().indexOf('range') >= 0) && G.isNum(out.rangeKm)) ci.values.erange = { km: out.rangeKm };
                     // for an electric car's cluster layout: the use per 100 km lately, the battery's health, the energy in it
                     const use = lv.consumption(), hs = isBev() ? bevSoh() : d.soh;
                     if (G.isNum(use.perKm)) ci.values.use = { kwh100: +(use.perKm * 100).toFixed(1) };

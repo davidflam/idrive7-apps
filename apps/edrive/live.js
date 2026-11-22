@@ -222,11 +222,18 @@ module.exports = function live(ctx, sh) {
         if (now - wantedT > 500) {
             wantedT = now;
             try { const w = JSON.parse(fs.readFileSync(WANTED, 'utf8')); wantedV = w && now - w.t < WANTED_FRESH_MS ? w : {}; } catch (e) { wantedV = {}; }
-            // Cluster Info and its family (eroobeeroo/idrive7-cluster-info) ask in their folder: wanted*.json { t, power }
-            if (!wantedV.power) {
+            // Cluster Info and its family (eroobeeroo/idrive7-cluster-info) ask in their folder: wanted*.json { t, power,
+            // values }: the power read fast only when it is asked for; values alone (a range on its panel) share the file
+            {
                 try {
                     fs.readdirSync(CI_DIR).filter((n) => /^wanted(-[\w.-]+)?\.json$/.test(n)).forEach((n) => {
-                        try { const w = JSON.parse(fs.readFileSync(path.join(CI_DIR, n), 'utf8')); if (w && now - w.t < WANTED_FRESH_MS && w.power) wantedV = Object.assign({}, wantedV, { power: true, ci: true }); } catch (e) { /* half written */ }
+                        try {
+                            const w = JSON.parse(fs.readFileSync(path.join(CI_DIR, n), 'utf8'));
+                            const vals = w && Array.isArray(w.values) ? w.values : [];
+                            if (w && now - w.t < WANTED_FRESH_MS && (w.power || vals.length)) {
+                                wantedV = Object.assign({}, wantedV, { power: !!(wantedV.power || w.power), ci: true, ciValues: (wantedV.ciValues || []).concat(vals) });
+                            }
+                        } catch (e) { /* half written */ }
                     });
                 } catch (e) { /* no such folder: no Cluster Info */ }
             }
@@ -1121,6 +1128,8 @@ module.exports = function live(ctx, sh) {
         },
         /** Cluster Info (or its family) asks for the power now. */
         clusterInfoWants() { return !!wanted().ci; },
+        /** The values Cluster Info's panels ask for ('range', 'soc', ...). */
+        clusterInfoValues() { return wanted().ciValues || []; },
         /** For other apps (SHARED): the last reading, whether the power is the fast one, the kW the battery allows now. */
         powerShare() {
             const d = data(), l = limitsKw(d);

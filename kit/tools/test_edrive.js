@@ -570,6 +570,19 @@ const checks = [
             try { return JSON.parse(fs.readFileSync(path.join(ciDir, 'edrive.json'), 'utf8')); } catch (e) { return null; }
         };
         const off = await shared({}), on = await shared({ clusterRange: true });
+        // Cluster Info's Range item: asked for in its wanted.json, with or without the power, the range shared anyway
+        const ask = (w) => { fs.writeFileSync(path.join(ciDir, 'wanted.json'), JSON.stringify(Object.assign({ t: now }, w))); };
+        const viaPanel = await (async () => {
+            delete require.cache[MAIN];
+            const iv = global.setInterval, every = [];
+            global.setInterval = (fn, ms) => { every.push({ fn, ms }); return 0; };
+            const b = await boot(tmp('ci-panel'), { soc: 50, soh: 100 }, { hybrid: 'bev' });
+            global.setInterval = iv;
+            now += 20000; await b.read();
+            ask({ values: ['range'] });
+            now += 1000; every.filter((x) => x.ms === 250).forEach((x) => x.fn());
+            try { return JSON.parse(fs.readFileSync(path.join(ciDir, 'edrive.json'), 'utf8')); } catch (e) { return null; }
+        })();
         delete process.env.CLUSTER_INFO_DIR;
         assert(off && off.values.soc.pct === 50 && !off.values.erange, 'off: the charge, no range: ' + JSON.stringify(off));
         assert.strictEqual(off.vehicle, 'bev', 'an electric car says so, for the cluster apps');
@@ -577,6 +590,7 @@ const checks = [
         assert(off.values.energy && Math.abs(off.values.energy.kwh - 37) < 0.05, 'energy shared: ' + JSON.stringify(off.values));
         // the range as the Range page has it
         assert(on && on.values.erange && on.values.erange.km > 100, 'on: the range shared: ' + JSON.stringify(on));
+        assert(viaPanel && viaPanel.values.erange && viaPanel.values.erange.km > 100, 'Cluster Info asking for range alone: ' + JSON.stringify(viaPanel));
     }],
     ['7. charge totals keep English singular and plural', async () => {
         const dir = tmp('charge-counts'), today = new Date(), current = today.getTime();
